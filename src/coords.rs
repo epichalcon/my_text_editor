@@ -127,7 +127,7 @@ where
         R: RangeBounds<T>,
     {
         self.y
-            .checked_add(&n)
+            .checked_sub(&n)
             .filter(|y| y_range.contains(y))
             .map(|y| (self.x, y).into())
     }
@@ -157,7 +157,7 @@ where
         R: RangeBounds<T>,
     {
         self.y
-            .checked_sub(&n)
+            .checked_add(&n)
             .filter(|y| y_range.contains(y))
             .map(|y| (self.x, y).into())
     }

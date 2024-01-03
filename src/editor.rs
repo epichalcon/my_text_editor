@@ -1,5 +1,5 @@
 use errno::errno;
-use std::{io, time::Duration};
+use std::{env, fs, io, time::Duration};
 
 use crossterm::{
     event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -12,6 +12,7 @@ use crate::coords::Coordinates;
 pub struct Editor {
     screen: Screen,
     cursor: Coordinates<u16>,
+    rows: Vec<String>,
 }
 
 impl Editor {
@@ -27,10 +28,13 @@ impl Editor {
         Self {
             screen: Screen::new(io::stdout(), width, height),
             cursor: Coordinates::default(),
+            rows: vec![],
         }
     }
 
     pub fn run(&mut self) {
+        self.open();
+
         if terminal::enable_raw_mode().is_err() {
             self.die("Error in enabeling raw input")
         }
@@ -40,7 +44,7 @@ impl Editor {
         }
 
         loop {
-            match self.screen.refresh_screen(&self.cursor) {
+            match self.screen.refresh_screen(&self.cursor, &self.rows) {
                 Ok(_) => (),
                 Err(_) => self.die("Error refreshing screen"),
             }
@@ -49,6 +53,20 @@ impl Editor {
                 Err(err) => self.die(err),
             }
         }
+    }
+
+    fn open(&mut self) {
+        match env::args().nth(1) {
+            Some(file) => {
+                let contents = fs::read_to_string(file).expect("file not found");
+
+                let mut lines: Vec<String> =
+                    contents.lines().map(|line| line.to_string()).collect();
+                self.rows.append(&mut lines);
+                info!("{:?}", &self.rows);
+            }
+            None => return,
+        };
     }
 
     pub fn read_key(&mut self) -> Result<Option<KeyEvent>, IoError> {
@@ -78,10 +96,9 @@ impl Editor {
                         self.exit();
                     }
                 }
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Left
-                | KeyCode::Right => self.move_cursor(c.code),
+                KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                    self.move_cursor(c.code)
+                }
                 _ => (),
             },
             None => (),
@@ -89,36 +106,42 @@ impl Editor {
     }
     fn move_cursor(&mut self, code: KeyCode) {
         if let Some(coord) = match code {
-            KeyCode::Up => self.cursor.try_up(),
-            KeyCode::Down => self.cursor.try_down(),
-            KeyCode::Left => self.cursor.try_left(),
-            KeyCode::Right => self.cursor.try_right(),
+            KeyCode::Up => self.cursor.try_bounded_up_by(1, ..self.screen.height),
+            KeyCode::Down => self.cursor.try_bounded_down_by(1, ..self.screen.height),
+            KeyCode::Left => self.cursor.try_bounded_left_by(1, ..self.screen.width),
+            KeyCode::Right => self.cursor.try_bounded_right_by(1, ..self.screen.width),
             _ => None,
         } {
-            self.cursor = coord
-        };
+            self.cursor = coord;
+        } else {
+            match code {
+                KeyCode::Up => self.screen.scroll_up(),
+                KeyCode::Down => self.screen.scroll_down(),
+                _ => (),
+            }
+        }
     }
 
-    pub fn die<S: Into<String>>(&mut self, message: S) {
-        let message = message.into();
-        match self.screen.clear_screen() {
+    pub fn die<S: Into<String>>(&mut self, error: S) {
+        let message = error.into();
+        match self.screen.reset_screen() {
             Ok(_) => (),
-            Err(_) => self.die("Error in refresh screen"),
+            Err(_) => self.die("Error in reset screen"),
         }
         if disable_raw_mode().is_err() {
-            println!("Error in dissabeling raw line 64: {}", errno());
+            println!("Error in dissabeling raw: {}", errno());
         }
         eprintln!("{message}: {}", errno());
         std::process::exit(1);
     }
 
     pub fn exit(&mut self) {
-        match self.screen.clear_screen() {
+        match self.screen.reset_screen() {
             Ok(_) => (),
-            Err(_) => self.die("Error in refresh screen"),
+            Err(_) => self.die("Error in reset screen"),
         }
         if disable_raw_mode().is_err() {
-            println!("Error in dissabeling raw line 64: {}", errno());
+            println!("Error in dissabeling raw: {}", errno());
         }
         std::process::exit(0);
     }
