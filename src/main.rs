@@ -10,7 +10,7 @@ use screen::*;
 mod coords;
 mod directions;
 
-use log::{info};
+use log::info;
 
 fn main() {
     log4rs::init_file("config/log4rs.yaml", Default::default()).unwrap();
@@ -18,5 +18,4 @@ fn main() {
     let mut editor = Editor::new();
 
     editor.run();
-
 }
