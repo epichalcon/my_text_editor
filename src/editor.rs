@@ -114,24 +114,11 @@ impl Editor {
         })
     }
 
-    fn cursor_end_of_line(&mut self, y: u16) -> Coordinates<u16> {
-        let mut true_y: u16 = self
-            .rows
-            .len()
-            .saturating_sub(1)
-            .min(y as usize)
-            .try_into()
-            .unwrap();
-        let mut true_x: u16 = self.get_row(true_y).len().try_into().unwrap();
-
-        Coordinates::new(true_x, true_y)
-    }
-
     fn move_cursor(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up => match self.cursor.try_bounded_up_by(1, ..self.screen.height) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y());
+                    let eol_cursor = self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
 
                     let x = eol_cursor.x().min(coord.x());
                     let y = coord.y();
@@ -146,7 +133,7 @@ impl Editor {
             },
             KeyCode::Down => match self.cursor.try_bounded_down_by(1, ..self.screen.height) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y());
+                    let eol_cursor = self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
                     let x = eol_cursor.x().min(coord.x());
                     let y: u16 = (self.rows.len().saturating_sub(1).min(coord.y() as usize))
                         .try_into()
@@ -162,21 +149,43 @@ impl Editor {
             },
             KeyCode::Left => match self.cursor.try_bounded_left_by(1, ..self.screen.width) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y());
+                    let eol_cursor =
+                        self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
                     let x = eol_cursor.x().min(coord.x());
                     let y: u16 = coord.y();
 
                     self.cursor = Coordinates::new(x, y);
                 }
                 None => {
-                    self.screen.scroll_left(1);
+                    info!("actual cursor: {}", self.cursor);
+                    info!("screen height: {}", self.screen.height);
+                    info!("screen offset: {}", self.screen.get_row_offset());
 
                     if self.cursor == Coordinates::new(0, 0) {
-                        return;
-                    } else if !(self.cursor.x() == 0 && self.screen.get_col_offset() != 0) {
-                        let eol_cursor = self.cursor_end_of_line(self.cursor.y().saturating_sub(1));
-                        let mut x = eol_cursor.x();
-                        let y: u16 = eol_cursor.y();
+                        if self.screen.get_row_offset() == 0 {
+                            // beguinning of file
+                            return;
+                        } else {
+                            let prev_eol_cursor = self.cursor_end_of_line(
+                                self.cursor.y() + self.screen.get_row_offset().saturating_sub(1),
+                            );
+                            let x = prev_eol_cursor.x();
+                            let y: u16 = 0;
+                            self.cursor = Coordinates::new(x, y);
+                            self.screen.scroll_up(1);
+                        }
+                    } else if self.cursor.x() == 0 && self.screen.get_col_offset() != 0 {
+                        self.screen.scroll_left(1);
+                    } else if self.cursor.x() == 0 && self.screen.get_col_offset() == 0 {
+                        // line beguinning
+                        let prev_eol_cursor = self.cursor_end_of_line(
+                            self.cursor.y().saturating_sub(1) + self.screen.get_row_offset(),
+                        );
+
+                        let mut x = prev_eol_cursor.x();
+                        let y: u16 = prev_eol_cursor.y() - self.screen.get_row_offset();
+
+                        info!("new end of line cursor: {}", prev_eol_cursor);
 
                         if x > self.screen.width {
                             self.screen.scroll_right(x - self.screen.width + 1);
@@ -189,14 +198,24 @@ impl Editor {
             },
             KeyCode::Right => match self.cursor.try_bounded_right_by(1, ..self.screen.width) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y());
+                    let eol_cursor =
+                        self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
                     let x;
                     let y;
 
-                    if coord.x() > eol_cursor.x() && coord.y() == eol_cursor.y() {
-                        if (coord.y() as usize) >= self.rows.len().saturating_sub(1) {
+                    if coord.x() > eol_cursor.x() {
+                        // end of the line
+                        if ((coord.y() + self.screen.get_row_offset()) as usize)
+                            >= self.rows.len().saturating_sub(1)
+                        {
+                            // end of file
                             x = self.cursor.x();
                             y = self.cursor.y();
+                        } else if coord.y() == self.screen.height - 1 {
+                            // end of screen
+                            self.screen.scroll_down(1);
+                            y = coord.y();
+                            x = 0;
                         } else {
                             y = coord.y().saturating_add(1);
                             x = 0;
@@ -222,75 +241,19 @@ impl Editor {
             },
             _ => (),
         }
-        // if let Some(coord) = match code {
-        //     KeyCode::Up => self.cursor.try_bounded_up_by(1, ..self.screen.height),
-        //     KeyCode::Down => self.cursor.try_bounded_down_by(1, ..self.screen.height),
-        //     KeyCode::Left => self.cursor.try_bounded_left_by(1, ..self.screen.width),
-        //     KeyCode::Right => self.cursor.try_bounded_right_by(1, ..self.screen.width),
-        //     _ => None,
-        // } {
-        //     let mut true_y: u16 = self
-        //         .rows
-        //         .len()
-        //         .saturating_sub(1)
-        //         .min(coord.y() as usize)
-        //         .try_into()
-        //         .unwrap();
-        //     let mut true_x: u16 = self
-        //         .get_row(true_y)
-        //         .len()
-        //         .min(coord.x() as usize)
-        //         .try_into()
-        //         .unwrap();
-        //
-        //     if ((true_x + self.screen.get_col_offset()) as usize) < self.get_row(true_y).len() {
-        //         true_x = 0;
-        //         true_y = true_y.saturating_add(1)
-        //     }
-        //
-        //     self.cursor = Coordinates::new(true_x, true_y);
-        //     if self.cursor.x() as usize >= self.get_row(self.cursor.y()).len() {
-        //         self.screen.reset_column_offset();
-        //     }
-        // } else {
-        //     match code {
-        //         KeyCode::Up => self.screen.scroll_up(1),
-        //         KeyCode::Down => self.screen.scroll_down(1),
-        //         KeyCode::Left => {
-        //             self.screen.scroll_left(1);
-        //             if self.cursor == Coordinates::new(0, 0) {
-        //                 return;
-        //             } else if !(self.cursor.x() == 0 && self.screen.get_col_offset() != 0) {
-        //                 let new_y: u16 = self.cursor.y().saturating_sub(1);
-        //                 let mut new_x = self
-        //                     .rows
-        //                     .iter()
-        //                     .nth(new_y as usize)
-        //                     .unwrap()
-        //                     .len()
-        //                     .try_into()
-        //                     .unwrap();
-        //                 if new_x > self.screen.width {
-        //                     self.screen.scroll_right(new_x - self.screen.width + 1);
-        //                     new_x = self.screen.width - 1;
-        //                 }
-        //                 self.cursor = Coordinates::new(new_x, new_y);
-        //             }
-        //         }
-        //         KeyCode::Right => {
-        //             if ((self.cursor.x() + self.screen.get_col_offset()) as usize)
-        //                 < self.get_row(self.cursor.y()).len()
-        //             {
-        //                 self.screen.scroll_right(1);
-        //             } else {
-        //                 let new_y: u16 = self.cursor.y().saturating_add(1);
-        //                 self.screen.reset_column_offset();
-        //                 self.cursor = Coordinates::new(0, new_y);
-        //             }
-        //         }
-        //         _ => (),
-        //     }
-        // }
+    }
+
+    fn cursor_end_of_line(&mut self, y: u16) -> Coordinates<u16> {
+        let mut true_y: u16 = self
+            .rows
+            .len()
+            .saturating_sub(1)
+            .min(y as usize)
+            .try_into()
+            .unwrap();
+        let mut true_x: u16 = self.get_row(true_y).len().try_into().unwrap();
+
+        Coordinates::new(true_x, true_y)
     }
 
     fn get_row(&self, y: u16) -> String {
