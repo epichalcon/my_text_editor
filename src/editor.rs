@@ -22,6 +22,7 @@ pub struct Editor {
     screen: Screen,
     cursor: Coordinates<u16>,
     rows: Vec<String>,
+    file_name: String,
 }
 
 impl Editor {
@@ -38,6 +39,7 @@ impl Editor {
             screen: Screen::new(io::stdout(), width, height),
             cursor: Coordinates::default(),
             rows: vec![],
+            file_name: "New file".to_string(),
         }
     }
 
@@ -53,7 +55,10 @@ impl Editor {
         }
 
         loop {
-            match self.screen.refresh_screen(&self.cursor, &self.rows) {
+            match self
+                .screen
+                .refresh_screen(&self.cursor, &self.rows, &self.file_name)
+            {
                 Ok(_) => (),
                 Err(_) => self.die("Error refreshing screen"),
             }
@@ -67,7 +72,9 @@ impl Editor {
     fn open(&mut self) {
         match env::args().nth(1) {
             Some(file) => {
-                let contents = fs::read_to_string(file).expect("file not found");
+                let contents = fs::read_to_string(&file).expect("file not found");
+
+                self.file_name = file;
 
                 let mut lines: Vec<String> =
                     contents.lines().map(|line| line.to_string()).collect();
@@ -118,7 +125,8 @@ impl Editor {
         match code {
             KeyCode::Up => match self.cursor.try_bounded_up_by(1, ..self.screen.height) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
+                    let eol_cursor =
+                        self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
 
                     let x = eol_cursor.x().min(coord.x());
                     let y = coord.y();
@@ -133,7 +141,11 @@ impl Editor {
             },
             KeyCode::Down => match self.cursor.try_bounded_down_by(1, ..self.screen.height) {
                 Some(coord) => {
-                    let eol_cursor = self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
+                    if self.rows.is_empty() {
+                        return;
+                    }
+                    let eol_cursor =
+                        self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
                     let x = eol_cursor.x().min(coord.x());
                     let y: u16 = (self.rows.len().saturating_sub(1).min(coord.y() as usize))
                         .try_into()
@@ -198,6 +210,9 @@ impl Editor {
             },
             KeyCode::Right => match self.cursor.try_bounded_right_by(1, ..self.screen.width) {
                 Some(coord) => {
+                    if self.rows.is_empty() {
+                        return;
+                    }
                     let eol_cursor =
                         self.cursor_end_of_line(coord.y() + self.screen.get_row_offset());
                     let x;
