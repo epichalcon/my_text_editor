@@ -4,16 +4,16 @@ use crossterm::style;
 use crossterm::style::SetAttribute;
 use crossterm::style::SetBackgroundColor;
 use crossterm::style::SetForegroundColor;
-use crossterm::style::SetStyle;
 use crossterm::terminal;
 use crossterm::QueueableCommand;
 use log::error;
-use std::fmt::format;
 use std::io;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Stdout;
 use std::io::Write;
+use std::time::Duration;
+use std::time::Instant;
 use std::u16;
 
 pub struct Screen {
@@ -22,6 +22,8 @@ pub struct Screen {
     pub height: u16,
     row_offset: u16,
     col_offset: u16,
+    status_msg: String,
+    status_time: Instant,
 }
 
 impl Screen {
@@ -32,7 +34,20 @@ impl Screen {
             height: height - 1,
             row_offset: 0,
             col_offset: 0,
+            status_msg: "".to_string(),
+            status_time: Instant::now(),
         }
+    }
+
+    pub fn set_status_msg(&mut self, msg: impl Into<String>) -> io::Result<()> {
+        self.status_msg = msg.into();
+        self.status_time = Instant::now();
+        self.stdout.draw_status_msg(
+            self.width,
+            self.height + 1,
+            &self.status_msg,
+        )?.flush()?;
+        Ok(())
     }
 
     pub fn refresh_screen(
@@ -40,7 +55,9 @@ impl Screen {
         cursor: &Coordinates<u16>,
         rows: &Vec<String>,
         file: &str,
+        changes: bool,
     ) -> io::Result<()> {
+        let is_new = !changes && file == "[New file]";
         self.stdout
             .queue(style::SetAttribute(style::Attribute::NoUnderline))?
             .queue(SetAttribute(style::Attribute::NormalIntensity))?
@@ -53,17 +70,35 @@ impl Screen {
                 rows,
                 self.row_offset,
                 self.col_offset,
-            )?
-            .draw_status_bar(
+                is_new,
+            )?;
+        if self.status_time.elapsed() < Duration::new(1, 0) {
+            self.stdout.draw_status_msg(
+                self.width,
+                self.height + 1,
+                &self.status_msg,
+            )?;
+        } else {
+            let modifier;
+            if changes{
+                modifier = "*";
+            }
+            else {
+                modifier = "";
+            }
+            self.stdout.draw_status_bar(
                 self.width,
                 self.height + 1,
                 file,
+                modifier,
                 cursor.y() + self.row_offset,
                 cursor.x() + self.col_offset,
-            )?
-            .queue(cursor::MoveTo(cursor.x(), cursor.y()))?
-            .queue(cursor::Show)?
-            .flush()?;
+            )?;
+        }
+        self.stdout
+        .queue(cursor::MoveTo(cursor.x(), cursor.y()))?
+        .queue(cursor::Show)?
+        .flush()?;
 
         Ok(())
     }
@@ -123,6 +158,7 @@ trait DrawHelper {
         rows: &Vec<String>,
         offset: u16,
         col_offset: u16,
+        is_new: bool,
     ) -> io::Result<&mut Self>;
 
     fn draw_status_bar(
@@ -130,9 +166,12 @@ trait DrawHelper {
         width: u16,
         height: u16,
         filename: &str,
+        modifier: &str,
         row_num: u16,
         col_num: u16,
     ) -> io::Result<&mut Self>;
+
+    fn draw_status_msg(&mut self, width: u16, height: u16, msg: &str) -> io::Result<&mut Self>;
 }
 
 impl DrawHelper for Stdout {
@@ -144,6 +183,7 @@ impl DrawHelper for Stdout {
         rows: &Vec<String>,
         row_offset: u16,
         col_offset: u16,
+        is_new: bool,
     ) -> io::Result<&mut Self> {
         let greeting = greeting.into();
 
@@ -168,7 +208,7 @@ impl DrawHelper for Stdout {
                     .queue(style::Print(windowed_row))?
                     .queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
             } else {
-                if y == height / 3 && rows.len() == 0 {
+                if y == height / 3 && is_new {
                     let padding: u16 = (width - greeting_len) / 2;
 
                     self.queue(cursor::MoveTo(0, y))?
@@ -195,6 +235,7 @@ impl DrawHelper for Stdout {
         width: u16,
         height: u16,
         filename: &str,
+        modifier: &str,
         row_num: u16,
         col_num: u16,
     ) -> io::Result<&mut Self> {
@@ -210,17 +251,41 @@ impl DrawHelper for Stdout {
                 .queue(style::Print(' '))?;
         }
 
-        self
-            .queue(cursor::MoveTo(0, height))?
-            .queue(style::Print(filename))?;
+        self.queue(cursor::MoveTo(0, height))?
+            .queue(style::Print(filename))?
+            .queue(style::Print(modifier))?;
 
-
-        self.queue(cursor::MoveTo((width as usize - location.len()).try_into().unwrap(), height))?
-            .queue(style::Print(location))?;
+        self.queue(cursor::MoveTo(
+            (width as usize - location.len()).try_into().unwrap(),
+            height,
+        ))?
+        .queue(style::Print(location))?;
 
         self.queue(SetAttribute(style::Attribute::NoBold))?
             .queue(SetForegroundColor(style::Color::White))?
             .queue(SetBackgroundColor(style::Color::Reset))?;
         Ok(self)
+    }
+
+    fn draw_status_msg(&mut self, width: u16, height: u16, msg: &str) -> io::Result<&mut Self> {
+        self.queue(cursor::MoveTo(0, height))?
+            .queue(SetAttribute(style::Attribute::Bold))?
+            .queue(SetBackgroundColor(style::Color::White))?
+            .queue(SetForegroundColor(style::Color::Black))?;
+
+        for col in 0..width {
+            self.queue(cursor::MoveTo(col, height))?
+                .queue(style::Print(' '))?;
+        }
+
+        self.queue(cursor::MoveTo(0, height))?
+            .queue(style::Print(msg))?;
+
+
+        self.queue(SetAttribute(style::Attribute::NoBold))?
+            .queue(SetForegroundColor(style::Color::White))?
+            .queue(SetBackgroundColor(style::Color::Reset))?;
+        Ok(self)
+
     }
 }

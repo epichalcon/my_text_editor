@@ -1,11 +1,7 @@
 use errno::errno;
-use num::{
-    traits::{SaturatingAdd, SaturatingSub},
-    Saturating,
-};
 use std::{
     env, fs,
-    io::{self, Cursor},
+    io::{self},
     time::Duration,
     u16,
 };
@@ -23,6 +19,7 @@ pub struct Editor {
     cursor: Coordinates<u16>,
     rows: Vec<String>,
     file_name: String,
+    has_changed: bool,
 }
 
 impl Editor {
@@ -38,8 +35,9 @@ impl Editor {
         Self {
             screen: Screen::new(io::stdout(), width, height),
             cursor: Coordinates::default(),
-            rows: vec![],
-            file_name: "New file".to_string(),
+            rows: vec!["".to_string()],
+            file_name: "[New file]".to_string(),
+            has_changed: false,
         }
     }
 
@@ -55,10 +53,12 @@ impl Editor {
         }
 
         loop {
-            match self
-                .screen
-                .refresh_screen(&self.cursor, &self.rows, &self.file_name)
-            {
+            match self.screen.refresh_screen(
+                &self.cursor,
+                &self.rows,
+                &self.file_name,
+                self.has_changed,
+            ) {
                 Ok(_) => (),
                 Err(_) => self.die("Error refreshing screen"),
             }
@@ -70,16 +70,21 @@ impl Editor {
     }
 
     fn open(&mut self) {
+        match self
+            .screen
+            .set_status_msg("HELP: Ctrl-Q = quit | Ctrl-S = save")
+        {
+            Ok(_) => (),
+            Err(_) => self.die("Error in status msg"),
+        }
         match env::args().nth(1) {
             Some(file) => {
                 let contents = fs::read_to_string(&file).expect("file not found");
 
                 self.file_name = file;
 
-                let mut lines: Vec<String> =
-                    contents.lines().map(|line| line.to_string()).collect();
-                self.rows.append(&mut lines);
-                info!("{:?}", &self.rows);
+                let lines: Vec<String> = contents.lines().map(|line| line.to_string()).collect();
+                self.rows = lines;
             }
             None => return,
         };
@@ -107,14 +112,39 @@ impl Editor {
     pub fn process_key_press(&mut self) -> Result<(), IoError> {
         Ok(match self.read_key()? {
             Some(c) => match c.code {
-                KeyCode::Char('q') => {
-                    if c.modifiers.contains(KeyModifiers::CONTROL) {
-                        self.exit();
-                    }
-                }
                 KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
                     self.move_cursor(c.code)
                 }
+                KeyCode::Char(ch) => {
+                    if ch == 'q' && c.modifiers.contains(KeyModifiers::CONTROL) {
+                        if self.has_changed {
+                            match self.screen.set_status_msg(
+                                "WARNING, files not saved. Do you really want to quit? [y/n]",
+                            ) {
+                                Ok(_) => (),
+                                Err(_) => self.die("Error in status msg"),
+                            }
+                            match self
+                                .read_key()?
+                                .unwrap_or(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL))
+                                .code
+                            {
+                                KeyCode::Char('y') => self.exit(),
+                                _ => (),
+                            }
+                        } else {
+                            self.exit()
+                        }
+                    } else if ch == 's' && c.modifiers.contains(KeyModifiers::CONTROL) {
+                        self.save_file();
+                    } else {
+                        self.insert_char(ch);
+                    }
+                }
+
+                KeyCode::Enter => self.insert_enter(),
+                KeyCode::Backspace => self.process_backspace(),
+                KeyCode::Delete => self.process_delete(),
                 _ => (),
             },
             None => (),
@@ -141,7 +171,11 @@ impl Editor {
             },
             KeyCode::Down => match self.cursor.try_bounded_down_by(1, ..self.screen.height) {
                 Some(coord) => {
-                    if self.rows.is_empty() {
+                    if self.rows.is_empty()
+                        || (((self.cursor.y() + self.screen.get_row_offset()) as usize)
+                            .saturating_add(1)
+                            == self.rows.len())
+                    {
                         return;
                     }
                     let eol_cursor =
@@ -157,7 +191,13 @@ impl Editor {
                         self.screen.reset_column_offset();
                     }
                 }
-                None => self.screen.scroll_down(1),
+                None => {
+                    if ((self.cursor.y() + self.screen.get_row_offset()) as usize).saturating_add(1)
+                        < self.rows.len()
+                    {
+                        self.screen.scroll_down(1)
+                    }
+                }
             },
             KeyCode::Left => match self.cursor.try_bounded_left_by(1, ..self.screen.width) {
                 Some(coord) => {
@@ -169,14 +209,12 @@ impl Editor {
                     self.cursor = Coordinates::new(x, y);
                 }
                 None => {
-                    info!("actual cursor: {}", self.cursor);
-                    info!("screen height: {}", self.screen.height);
-                    info!("screen offset: {}", self.screen.get_row_offset());
-
                     if self.cursor == Coordinates::new(0, 0) {
-                        if self.screen.get_row_offset() == 0 {
+                        if self.screen.get_row_offset() == 0 && self.screen.get_col_offset() == 0 {
                             // beguinning of file
                             return;
+                        } else if self.screen.get_col_offset() != 0 {
+                            self.screen.scroll_left(1);
                         } else {
                             let prev_eol_cursor = self.cursor_end_of_line(
                                 self.cursor.y() + self.screen.get_row_offset().saturating_sub(1),
@@ -196,8 +234,6 @@ impl Editor {
 
                         let mut x = prev_eol_cursor.x();
                         let y: u16 = prev_eol_cursor.y() - self.screen.get_row_offset();
-
-                        info!("new end of line cursor: {}", prev_eol_cursor);
 
                         if x > self.screen.width {
                             self.screen.scroll_right(x - self.screen.width + 1);
@@ -259,16 +295,171 @@ impl Editor {
     }
 
     fn cursor_end_of_line(&mut self, y: u16) -> Coordinates<u16> {
-        let mut true_y: u16 = self
+        let true_y: u16 = self
             .rows
             .len()
             .saturating_sub(1)
             .min(y as usize)
             .try_into()
             .unwrap();
-        let mut true_x: u16 = self.get_row(true_y).len().try_into().unwrap();
+        let true_x: u16 = self.get_row(true_y).len().try_into().unwrap();
 
         Coordinates::new(true_x, true_y)
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.has_changed = true;
+        let current_row_index = self.cursor.y() + self.screen.get_row_offset();
+        let current_col_index = self.cursor.x() + self.screen.get_col_offset();
+
+        let mut row: String = self
+            .rows
+            .iter()
+            .nth(current_row_index as usize)
+            .unwrap()
+            .clone();
+        row.insert(current_col_index as usize, ch);
+
+        self.rows.remove(current_row_index as usize);
+        self.rows.insert(current_row_index as usize, row);
+
+        self.move_cursor(KeyCode::Right);
+    }
+
+    fn insert_enter(&mut self) {
+        self.has_changed = true;
+        let current_row_index = self.cursor.y() + self.screen.get_row_offset();
+        let current_col_index = self.cursor.x() + self.screen.get_col_offset();
+
+        let mut row: String = self
+            .rows
+            .iter()
+            .nth(current_row_index as usize)
+            .unwrap()
+            .clone();
+        let post_cursor_row = &row.clone()[(current_col_index as usize)..];
+
+        row.truncate(current_col_index as usize);
+
+        self.rows.remove(current_row_index as usize);
+        self.rows.insert(current_row_index as usize, row);
+        self.rows.insert(
+            current_row_index.saturating_add(1) as usize,
+            post_cursor_row.to_string(),
+        );
+
+        self.move_cursor(KeyCode::Down);
+        self.cursor = Coordinates::new(0, self.cursor.y());
+        self.screen.reset_column_offset();
+    }
+
+    fn process_backspace(&mut self) {
+        self.has_changed = true;
+        let current_row_index = self.cursor.y() + self.screen.get_row_offset();
+        let current_col_index = self.cursor.x() + self.screen.get_col_offset();
+
+        let mut row: String = self.get_row(current_row_index);
+
+        self.move_cursor(KeyCode::Left);
+
+        if current_col_index == 0 && current_row_index == 0 {
+            return;
+        } else if current_col_index == 0 {
+            let mut prev_row: String = self.get_row(current_row_index.saturating_sub(1));
+            prev_row += &row;
+
+            self.rows.remove(current_row_index as usize);
+            self.rows
+                .remove(current_row_index.saturating_sub(1) as usize);
+            self.rows
+                .insert(current_row_index.saturating_sub(1) as usize, prev_row);
+        } else {
+            row.remove(current_col_index.saturating_sub(1) as usize);
+            self.rows.remove(current_row_index as usize);
+            self.rows.insert(current_row_index as usize, row);
+        }
+    }
+
+    fn process_delete(&mut self) {
+        self.has_changed = true;
+        let current_row_index = self.cursor.y() + self.screen.get_row_offset();
+        let current_col_index = self.cursor.x() + self.screen.get_col_offset();
+
+        let mut row: String = self.get_row(current_row_index);
+
+        if current_row_index as usize == self.rows.len().saturating_sub(1)
+            && current_col_index == self.cursor_end_of_line(current_row_index).x()
+        {
+            return;
+        } else if current_col_index == self.cursor_end_of_line(current_row_index).x() {
+            let next_row: String = self.get_row(current_row_index.saturating_add(1));
+            row += &next_row;
+
+            self.rows.remove(current_row_index as usize);
+            self.rows.remove(current_row_index as usize);
+            self.rows.insert(current_row_index as usize, row);
+        } else {
+            row.remove(current_col_index as usize);
+            self.rows.remove(current_row_index as usize);
+            self.rows.insert(current_row_index as usize, row);
+        }
+    }
+
+    fn save_file(&mut self) {
+        if self.file_name == "[New file]" {
+            match self.prompt_file_name() {
+                Ok(_) => (),
+                Err(err) => self.die(err),
+            }
+        }
+
+        let content = self.rows.join("\n");
+
+        match fs::write(&self.file_name, content) {
+            Ok(_) => (),
+            Err(_) => self.die("Error writing to file"),
+        }
+
+        match self.screen.set_status_msg("file saved.") {
+            Ok(_) => (),
+            Err(_) => self.die("Error in msg"),
+        }
+
+        self.has_changed = false;
+    }
+
+    fn prompt_file_name(&mut self) -> Result<(), IoError> {
+        let mut file_name = "".to_string();
+        loop {
+            match self
+                .screen
+                .set_status_msg(format!("File name: {}", file_name))
+            {
+                Ok(_) => (),
+                Err(_) => self.die("Error in msg"),
+            }
+
+            match self.read_key()? {
+                Some(c) => match c.code {
+                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                        self.move_cursor(c.code)
+                    }
+                    KeyCode::Char(ch) => {
+                        file_name += &ch.to_string();
+                    }
+
+                    KeyCode::Enter => {
+                        self.file_name = file_name;
+                        return Ok(());
+                    }
+                    KeyCode::Backspace => {
+                        let _ = file_name.pop();
+                    }
+                    _ => (),
+                },
+                None => (),
+            }
+        }
     }
 
     fn get_row(&self, y: u16) -> String {
