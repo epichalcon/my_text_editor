@@ -1,14 +1,15 @@
 use errno::errno;
 use std::{
     env, fs,
-    io::{self},
+    io::{self, Stdout},
     time::Duration,
     u16,
 };
 
 use crossterm::{
-    event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{self, disable_raw_mode},
+    QueueableCommand,
 };
 
 use super::*;
@@ -32,8 +33,16 @@ impl Editor {
             }
         };
 
+        let stdout = match initialize_stdout() {
+            Ok(stdout) => stdout,
+            Err(_) => {
+                eprintln!("Error initializing stdout: {}", errno());
+                std::process::exit(1);
+            }
+        };
+
         Self {
-            screen: Screen::new(io::stdout(), width, height),
+            screen: Screen::new(stdout, width, height),
             cursor: Coordinates::default(),
             rows: vec!["".to_string()],
             file_name: "[New file]".to_string(),
@@ -99,7 +108,9 @@ impl Editor {
                             Ok(Event::Key(key_event)) => {
                                 return Ok(Some(key_event));
                             }
-                            Ok(_) => return Ok(None),
+                            Ok(_) => {
+                                return Ok(None);
+                            }
                             Err(_) => return Err(IoError::new("Error in read")),
                         }
                     }
@@ -137,8 +148,15 @@ impl Editor {
                         }
                     } else if ch == 's' && c.modifiers.contains(KeyModifiers::CONTROL) {
                         self.save_file();
+                    } else if ch == 'f' && c.modifiers.contains(KeyModifiers::CONTROL) {
+                        match self.prompt_search() {
+                            Ok(_) => (),
+                            Err(err) => self.die(err),
+                        }
                     } else {
-                        self.insert_char(ch);
+                        if ch.is_ascii() {
+                            self.insert_char(ch);
+                        }
                     }
                 }
 
@@ -441,9 +459,6 @@ impl Editor {
 
             match self.read_key()? {
                 Some(c) => match c.code {
-                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-                        self.move_cursor(c.code)
-                    }
                     KeyCode::Char(ch) => {
                         file_name += &ch.to_string();
                     }
@@ -459,6 +474,117 @@ impl Editor {
                 },
                 None => (),
             }
+        }
+    }
+
+    fn prompt_search(&mut self) -> Result<(), IoError> {
+        let mut search_term = "".to_string();
+        loop {
+            match self
+                .screen
+                .set_status_msg(format!("Search: {}", search_term))
+            {
+                Ok(_) => (),
+                Err(_) => self.die("Error in msg"),
+            }
+
+            match self.read_key()? {
+                Some(c) => match c.code {
+                    KeyCode::Char(ch) => {
+                        search_term += &ch.to_string();
+                    }
+
+                    KeyCode::Enter => {
+                        match self.find(&search_term) {
+                            Ok(_) => (),
+                            Err(_) => self.die("Error in find"),
+                        }
+                        return Ok(());
+                    }
+                    KeyCode::Backspace => {
+                        let _ = search_term.pop();
+                    }
+                    KeyCode::Esc => {
+                        return Ok(());
+                    }
+                    _ => (),
+                },
+                None => (),
+            }
+        }
+    }
+
+    fn find(&mut self, term: &str) -> Result<(), IoError> {
+        let mut findings = vec![];
+        for (y, row) in self.rows.iter().enumerate() {
+            match row.find(term) {
+                Some(x) => findings.push(Coordinates::new(x, y)),
+                None => (),
+            }
+        }
+
+        let findings = self
+            .rows
+            .iter()
+            .enumerate()
+            .fold(vec![], |mut acc, (y, row)| {
+                match row.find(term) {
+                    Some(x) => acc.push(Coordinates::new(x, y)),
+                    None => (),
+                };
+                acc
+            });
+
+        info!("{:?}", findings);
+
+        let mut finding: usize = 0;
+
+        loop {
+            self.go_to_coordinate(findings[finding]);
+            match self.read_key()? {
+                Some(c) => match c.code {
+                    KeyCode::Up => {
+                        if finding == 0 {
+                            finding = findings.len().saturating_sub(1);
+                        } else {
+                            finding -= 1;
+                        }
+                    }
+
+                    KeyCode::Down => {
+                        if finding == findings.len().saturating_sub(1) {
+                            finding = 0;
+                        } else {
+                            finding += 1;
+                        }
+                    }
+                    _ => return Ok(()),
+                },
+                None => (),
+            }
+        }
+    }
+
+    fn go_to_coordinate(&mut self, coord: Coordinates<usize>) {
+        let x = coord.x();
+        let y = coord.y();
+
+        let offset_row = y.saturating_sub(self.screen.height as usize / 2);
+        let true_y = y - offset_row;
+
+        let offset_col = x.saturating_sub(self.screen.width as usize / 2);
+        let true_x = x - offset_col;
+
+        self.screen.reset_row_offset();
+        self.screen.reset_column_offset();
+
+        self.screen.scroll_down(offset_row.try_into().unwrap());
+        self.screen.scroll_right(offset_col.try_into().unwrap());
+
+        self.cursor = Coordinates::new(true_x.try_into().unwrap(), true_y.try_into().unwrap());
+        match self.screen.refresh_screen(&self.cursor, &self.rows, &self.file_name, self.has_changed) {
+            Ok(_) => (),
+            Err(_) => self.die("Error in refresh screen while going to coordinate"),
         }
     }
 
@@ -484,9 +610,20 @@ impl Editor {
             Ok(_) => (),
             Err(_) => self.die("Error in reset screen"),
         }
+        match io::stdout().queue(event::DisableMouseCapture) {
+            Ok(_) => (),
+            Err(_) => self.die("Error in disabeling mouse Capture"),
+        }
+
         if disable_raw_mode().is_err() {
             println!("Error in dissabeling raw: {}", errno());
         }
         std::process::exit(0);
     }
+}
+
+pub fn initialize_stdout() -> io::Result<Stdout> {
+    let mut stdout = io::stdout();
+    stdout.queue(event::EnableMouseCapture)?;
+    Ok(stdout)
 }
