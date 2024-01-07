@@ -24,7 +24,7 @@ cp target/release/texty .
 
 To execute the proyect run the following comand 
 
-`texty [file_name]`
+`./texty [file_name]`
 
 If a file name is provided, the text editor will open the file, if the file does not exist, it will be created. If a file name is not provided, a new file will be created.
 

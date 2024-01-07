@@ -6,7 +6,6 @@ use crossterm::style::SetBackgroundColor;
 use crossterm::style::SetForegroundColor;
 use crossterm::terminal;
 use crossterm::QueueableCommand;
-use log::error;
 use std::io;
 use std::io::Error;
 use std::io::ErrorKind;
@@ -42,11 +41,9 @@ impl Screen {
     pub fn set_status_msg(&mut self, msg: impl Into<String>) -> io::Result<()> {
         self.status_msg = msg.into();
         self.status_time = Instant::now();
-        self.stdout.draw_status_msg(
-            self.width,
-            self.height + 1,
-            &self.status_msg,
-        )?.flush()?;
+        self.stdout
+            .draw_status_msg(self.width, self.height + 1, &self.status_msg)?
+            .flush()?;
         Ok(())
     }
 
@@ -73,17 +70,13 @@ impl Screen {
                 is_new,
             )?;
         if self.status_time.elapsed() < Duration::new(1, 0) {
-            self.stdout.draw_status_msg(
-                self.width,
-                self.height + 1,
-                &self.status_msg,
-            )?;
+            self.stdout
+                .draw_status_msg(self.width, self.height + 1, &self.status_msg)?;
         } else {
             let modifier;
-            if changes{
+            if changes {
                 modifier = "*";
-            }
-            else {
+            } else {
                 modifier = "";
             }
             self.stdout.draw_status_bar(
@@ -96,9 +89,9 @@ impl Screen {
             )?;
         }
         self.stdout
-        .queue(cursor::MoveTo(cursor.x(), cursor.y()))?
-        .queue(cursor::Show)?
-        .flush()?;
+            .queue(cursor::MoveTo(cursor.x(), cursor.y()))?
+            .queue(cursor::Show)?
+            .flush()?;
 
         Ok(())
     }
@@ -195,7 +188,6 @@ impl DrawHelper for Stdout {
                 let row: String = match rows.iter().nth(row_offset) {
                     Some(row) => row.clone(),
                     None => {
-                        error!("index out of bounds");
                         return Err(Error::new(ErrorKind::InvalidInput, "index out of bounds"));
                     }
                 };
@@ -281,11 +273,9 @@ impl DrawHelper for Stdout {
         self.queue(cursor::MoveTo(0, height))?
             .queue(style::Print(msg))?;
 
-
         self.queue(SetAttribute(style::Attribute::NoBold))?
             .queue(SetForegroundColor(style::Color::White))?
             .queue(SetBackgroundColor(style::Color::Reset))?;
         Ok(self)
-
     }
 }

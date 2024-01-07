@@ -87,20 +87,18 @@ impl Editor {
             Err(_) => self.die("Error in status msg"),
         }
         match env::args().nth(1) {
-            Some(file) => {
-                match fs::read_to_string(&file) {
-                    Ok(contents) => {
-                        self.file_name = file;
+            Some(file) => match fs::read_to_string(&file) {
+                Ok(contents) => {
+                    self.file_name = file;
 
-                        let lines: Vec<String> =
-                            contents.lines().map(|line| line.to_string()).collect();
-                        self.rows = lines;
-                    }
-                    Err(_) => {
-                        self.file_name = file;
-                    }
+                    let lines: Vec<String> =
+                        contents.lines().map(|line| line.to_string()).collect();
+                    self.rows = lines;
                 }
-            }
+                Err(_) => {
+                    self.file_name = file;
+                }
+            },
             None => return,
         };
     }
@@ -540,8 +538,6 @@ impl Editor {
                 };
                 acc
             });
-
-        info!("{:?}", findings);
 
         let mut finding: usize = 0;
 
