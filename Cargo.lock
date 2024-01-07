@@ -282,17 +282,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "my_text_editor"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "errno",
- "log",
- "log4rs",
- "num",
-]
-
-[[package]]
 name = "num"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -554,6 +543,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "texty"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "errno",
+ "log",
+ "log4rs",
+ "num",
 ]
 
 [[package]]

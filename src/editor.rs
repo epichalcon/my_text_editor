@@ -88,12 +88,18 @@ impl Editor {
         }
         match env::args().nth(1) {
             Some(file) => {
-                let contents = fs::read_to_string(&file).expect("file not found");
+                match fs::read_to_string(&file) {
+                    Ok(contents) => {
+                        self.file_name = file;
 
-                self.file_name = file;
-
-                let lines: Vec<String> = contents.lines().map(|line| line.to_string()).collect();
-                self.rows = lines;
+                        let lines: Vec<String> =
+                            contents.lines().map(|line| line.to_string()).collect();
+                        self.rows = lines;
+                    }
+                    Err(_) => {
+                        self.file_name = file;
+                    }
+                }
             }
             None => return,
         };
@@ -582,7 +588,12 @@ impl Editor {
         self.screen.scroll_right(offset_col.try_into().unwrap());
 
         self.cursor = Coordinates::new(true_x.try_into().unwrap(), true_y.try_into().unwrap());
-        match self.screen.refresh_screen(&self.cursor, &self.rows, &self.file_name, self.has_changed) {
+        match self.screen.refresh_screen(
+            &self.cursor,
+            &self.rows,
+            &self.file_name,
+            self.has_changed,
+        ) {
             Ok(_) => (),
             Err(_) => self.die("Error in refresh screen while going to coordinate"),
         }
